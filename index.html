@@ -64,7 +64,7 @@
   </div>
   <div id="status"></div>
   <canvas id="game" width="480" height="560"></canvas>
-  <div id="hint">← → 또는 마우스로 트레이 조작 · Space로 시작/일시정지<br>아이템: 🔴 멀티볼(중첩, 최대 5개) · ⚡ 가속(중첩, 최대 6단계) · 🍞 트레이 확장(최대 3회, 이후 점수 전환) — 모두 영구 지속!</div>
+  <div id="hint">← → 또는 마우스로 트레이 조작 · Space로 시작/일시정지<br>아이템: 🔴 멀티볼(중첩, 최대 5개) · ⚡ 가속(중첩, 최대 6단계) · 🍞 트레이 확장(최대 3회, 이후 점수 전환) — 모두 영구 지속! · 🔥 파이어볼(15초간 모든 벽돌 즉시 파괴, 탄 빵도 파괴 가능)</div>
 </div>
 
 <div id="overlay">
@@ -197,6 +197,8 @@ let items = [];
 let paddle = { x: 0, y: 0, w: BASE_PADDLE_W, h: 12, speed: 7 };
 let paddleBoostCount = 0;
 let speedBoostCount = 0;
+let fireUntil = 0;
+const FIRE_DURATION_MS = 15000;
 let running = false;
 let gameStartTime = 0;
 let leftPressed = false, rightPressed = false;
@@ -226,7 +228,7 @@ function loadStage(n) {
 }
 
 function resetForNewGame() {
-  score = 0; lives = 3; paddleBoostCount = 0; speedBoostCount = 0;
+  score = 0; lives = 3; paddleBoostCount = 0; speedBoostCount = 0; fireUntil = 0;
   loadStage(1);
   gameStartTime = Date.now();
   updateHUD();
@@ -368,7 +370,7 @@ function startGame() {
 // ===================== 아이템 =====================
 function maybeDropItem(x, y) {
   if (Math.random() < ITEM_DROP_CHANCE) {
-    const types = ['multi', 'speed', 'paddle'];
+    const types = ['multi', 'speed', 'paddle', 'fire'];
     const type = types[Math.floor(Math.random() * types.length)];
     items.push({ x, y, w: 18, h: 18, type, vy: 2.0 });
   }
@@ -401,6 +403,8 @@ function applyItem(type, now) {
     } else {
       score += 30;
     }
+  } else if (type === 'fire') {
+    fireUntil = now + FIRE_DURATION_MS;
   }
   updateHUD();
 }
@@ -420,7 +424,7 @@ function currentSpeedFactor() {
   return 1 + 0.25 * speedBoostCount;
 }
 
-function handleBrickCollisionForBall(ball) {
+function handleBrickCollisionForBall(ball, fireActive) {
   for (let r = 0; r < stageData.rows; r++) {
     for (let c = 0; c < stageData.cols; c++) {
       const cell = stageData.cells[r][c];
@@ -430,7 +434,13 @@ function handleBrickCollisionForBall(ball) {
       if (ball.x + ball.r > bx && ball.x - ball.r < bx + CONFIG.brickW &&
           ball.y + ball.r > by && ball.y - ball.r < by + CONFIG.brickH) {
         ball.dirY = -ball.dirY;
-        if (cell.type !== 'unbreak') {
+        if (fireActive) {
+          // 파이어볼: 벽돌 종류와 상관없이(탄 빵 포함) 즉시 파괴
+          score += cell.type === 'unbreak' ? 20 : (cell.type === 'multi' ? 15 : 10);
+          maybeDropItem(bx + CONFIG.brickW / 2, by + CONFIG.brickH / 2);
+          stageData.cells[r][c] = null;
+          updateHUD();
+        } else if (cell.type !== 'unbreak') {
           cell.hits--;
           if (cell.hits <= 0) {
             score += cell.type === 'multi' ? 15 : 10;
@@ -495,7 +505,8 @@ function update() {
   if (remaining.length === 0) { loseLife(); return; }
   balls = remaining;
 
-  for (const ball of balls) handleBrickCollisionForBall(ball);
+  const fireActive = now < fireUntil;
+  for (const ball of balls) handleBrickCollisionForBall(ball, fireActive);
   updateItems(now);
   checkStageClear();
 }
@@ -628,8 +639,34 @@ function drawBricks() {
   }
 }
 
+function drawFlameLayer(size, color) {
+  ctx.beginPath();
+  ctx.moveTo(0, -size * 1.4);
+  ctx.bezierCurveTo(size * 0.9, -size * 0.6, size * 0.7, size * 0.5, 0, size * 1.1);
+  ctx.bezierCurveTo(-size * 0.7, size * 0.5, -size * 0.9, -size * 0.6, 0, -size * 1.4);
+  ctx.fillStyle = color;
+  ctx.fill();
+}
+
+function drawFlameBall(ball) {
+  const r = ball.r;
+  ctx.save();
+  ctx.translate(ball.x, ball.y);
+  const wob = Math.sin(Date.now() / 90 + ball.x) * 0.18;
+  ctx.rotate(wob);
+  drawFlameLayer(r * 1.15, '#dc2626');
+  drawFlameLayer(r * 0.85, '#f97316');
+  drawFlameLayer(r * 0.5, '#fde047');
+  ctx.restore();
+}
+
 function drawBalls() {
+  const fireActive = Date.now() < fireUntil;
   for (const ball of balls) {
+    if (fireActive) {
+      drawFlameBall(ball);
+      continue;
+    }
     ctx.beginPath();
     ctx.arc(ball.x, ball.y, ball.r, 0, Math.PI * 2);
     ctx.fillStyle = ball.isMain ? '#f8fafc' : '#fde68a';
@@ -667,6 +704,7 @@ const ITEM_STYLE = {
   multi: { bg: '#f97316', label: 'M' },
   speed: { bg: '#facc15', label: 'S' },
   paddle: { bg: '#4ade80', label: 'P' },
+  fire: { bg: '#ef4444', label: '🔥' },
 };
 function drawItems() {
   for (const it of items) {
@@ -690,6 +728,8 @@ function updateHUD() {
   stageNumEl.textContent = stage;
   const extraBalls = balls.filter(b => !b.isMain).length;
   const parts = [];
+  const fireRemaining = Math.ceil((fireUntil - Date.now()) / 1000);
+  if (fireRemaining > 0) parts.push(`🔥 파이어볼 ${fireRemaining}초`);
   if (speedBoostCount > 0) parts.push(`⚡ 가속 x${speedBoostCount}`);
   if (extraBalls > 0) parts.push(`🔴 멀티볼 +${extraBalls}`);
   parts.push(`🍞 트레이 ${paddleBoostCount}/${MAX_PADDLE_BOOST}`);
